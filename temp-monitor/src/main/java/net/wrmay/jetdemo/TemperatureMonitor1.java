@@ -10,7 +10,7 @@ import com.hazelcast.jet.datamodel.Tuple2;
 import com.hazelcast.jet.datamodel.Tuple4;
 import com.hazelcast.jet.pipeline.*;
 
-public class TemperatureMonitor {
+public class TemperatureMonitor1 {
 
     private static String categorizeTemp(double temp, int warningLimit, int criticalLimit){
         String result;
@@ -38,32 +38,8 @@ public class TemperatureMonitor {
 
         statusEvents = LoggingService.tee(statusEvents, "status event logger", logDir, entry -> "NEW EVENT FOR " + entry.getSerialNum());
 
-        // split the events by serial number, create a tumbling window to calculate avg. temp over 10s
-        // output is a tuple: serial number, avg temp
-        StreamStage<KeyedWindowResult<String, Double>> averageTemps = statusEvents.groupingKey(MachineStatus::getSerialNum)
-                .window(WindowDefinition.tumbling(10000))
-                .aggregate(AggregateOperations.averagingLong(MachineStatus::getBitTemp)).setName("Average Temp");
-
-        averageTemps = LoggingService.tee(averageTemps, "average temps logger", logDir,   window -> "AVG " + window.getKey() + " " + window);
-
-        // look up the machine profile for this machine, copy the warning temp onto the event
-        // the output is serial number, avg temp, warning temp, critical temp
-        StreamStage<Tuple4<String, Double, Integer, Integer>> temperaturesAndLimits =
-                averageTemps.groupingKey(KeyedWindowResult::getKey).
-                <MachineProfile, Tuple4<String, Double, Integer, Integer>>mapUsingIMap(Names.PROFILE_MAP_NAME,
-                (window, machineProfile) -> Tuple4.tuple4(window.getKey(), window.getValue(), machineProfile.getWarningTemp(), machineProfile.getCriticalTemp()))
-                .setName("Lookup Temp Limits");
-
-        temperaturesAndLimits = LoggingService.tee(temperaturesAndLimits, "temps and limits logger", logDir,  tuple -> "LOOKUP " + tuple.f0() + " AVG: " + tuple.f1() + " WARN: " + tuple.f2() + " CRIT: " + tuple.f3());
-
-        // categorize as GREEN / ORANGE / RED, output is serial number, category
-        StreamStage<Tuple2<String,String>> labeledTemperatures =
-                temperaturesAndLimits.map(tuple -> Tuple2.tuple2(tuple.f0(), categorizeTemp(tuple.f1(), tuple.f2(), tuple.f3())))
-                .setName("Apply Label");
-
-        labeledTemperatures = LoggingService.tee(labeledTemperatures, "labeled temps logger",logDir,  tuple -> "CATEGORIZE " + tuple.f0() + " " + tuple.f1());
-
-        labeledTemperatures.writeTo(Sinks.map(Names.STATUS_MAP_NAME));
+        // sink to the machine_status map
+        statusEvents.writeTo(Sinks.map(Names.STATUS_MAP_NAME, MachineStatus::getSerialNum, status -> String.valueOf(status.getBitTemp() )));
 
         return pipeline;
     }
